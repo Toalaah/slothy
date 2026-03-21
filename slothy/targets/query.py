@@ -52,6 +52,9 @@ from slothy.targets.aarch64 import (
     apple_m1_icestorm_experimental as Target_AppleM1_Icestorm_Experimental,
 )
 
+from slothy.targets.x86_64 import x86_64 as Arch_x86_64
+from slothy.targets.x86_64 import x86_64 as Target_x86_64
+
 
 class UnknownTarget(Exception):
     """Exception raised when an unknown architecture or microarchitecture
@@ -65,6 +68,7 @@ class Archery:
         "Arm_v7M": Arch_Armv7M,
         "Arm_v81M": Arch_Armv81M,
         "Arm_AArch64": AArch64_Neon,
+        "x86_64": Arch_x86_64,
     }
 
     _targets = {
@@ -78,6 +82,7 @@ class Archery:
         "Arm_Big_experimental": Target_Big_Experimental,
         "Apple_M1_firestorm_experimental": Target_AppleM1_Firestorm_Experimental,
         "Apple_M1_icestorm_experimental": Target_AppleM1_Icestorm_Experimental,
+        "x86_64": Target_x86_64,
     }
 
     @staticmethod
