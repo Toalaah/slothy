@@ -1520,12 +1520,11 @@ class LLVM_Mc:
         return symbols_with_values[matching_symbols[0]]
 
     @staticmethod
-    def assemble(
-        source, arch, attr, log, symbol=None, preprocessor=None, include_paths=None
-    ):
+    def assemble(source, arch, attr, log, symbol=None, preprocessor=None, include_paths=None):
         """Runs LLVM-MC tool to assemble `source`, returning byte code"""
 
         thumb = "thumb" in arch or (attr is not None and "thumb" in attr)
+        x86 = "x86" in arch or (attr is not None and "x86" in attr)
 
         # Unfortunately, there is no option to directly extract byte code
         # from LLVM-MC: One either gets a textual description, or an object file.
@@ -1536,6 +1535,8 @@ class LLVM_Mc:
         if symbol is None:
             if thumb is True:
                 source = [SourceLine(".thumb")] + source
+            if x86 is True:
+                source = [SourceLine(".intel_syntax noprefix")] + source
             source = [
                 SourceLine(".global harness"),
                 SourceLine(".type harness, %function"),
