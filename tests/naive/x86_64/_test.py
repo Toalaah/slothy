@@ -26,11 +26,3 @@ class Instructions(OptimizationRunner):
 test_instances = [
     Instructions(),
 ]
-
-if __name__ == "__main__":
-    for runner in test_instances:
-        try:
-            runner.run()
-            print(f"  OK  {runner.name}")
-        except Exception as e:
-            print(f"  FAIL {runner.name}: {e}")
