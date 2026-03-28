@@ -1,11 +1,11 @@
 from common.OptimizationRunner import OptimizationRunner
 
 import slothy.targets.x86_64.x86_64 as Arch_x86_64
-import slothy.targets.x86_64.x86_64_base as Target_x86_64
+import slothy.targets.x86_64.x86_64_v1 as Target_x86_64_v1
 
 
 class Instructions(OptimizationRunner):
-    def __init__(self, var="", arch=Arch_x86_64, target=Target_x86_64):
+    def __init__(self, var="", arch=Arch_x86_64, target=Target_x86_64_v1):
         _ = var
         super().__init__("instructions", base_dir="tests", arch=arch, target=target)
 

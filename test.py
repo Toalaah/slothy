@@ -41,7 +41,7 @@ import slothy.targets.aarch64.apple_m1_icestorm_experimental as Target_AppleM1_i
 
 import slothy.targets.riscv.xuantie_c908 as Target_XuanTieC908
 
-import slothy.targets.x86_64.x86_64_base as Target_x86_64
+import slothy.targets.x86_64.x86_64_v1 as Target_x86_64_v1
 
 
 from tests.naive.armv7m._test import (
@@ -109,7 +109,7 @@ def main():
             Target_AppleM1_icestorm.__name__,
             Target_AArch64Big.__name__,
             Target_XuanTieC908.__name__,
-            Target_x86_64.__name__,
+            Target_x86_64_v1.__name__,
         ],
     )
     args = parser.parse_args()
