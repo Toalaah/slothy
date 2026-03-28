@@ -48,7 +48,6 @@ from unicorn.x86_const import (
     UC_X86_REG_RIP,
     UC_X86_REG_RSI,
     UC_X86_REG_RSP,
-    UC_X86_REG_RSP,
     UC_X86_REG_EAX,
     UC_X86_REG_EBX,
     UC_X86_REG_ECX,
@@ -272,7 +271,7 @@ class RegisterType(Enum):
         )
         flags = _FLAGS
 
-        # TODO: add GPR variants (eax, etc.) should probaby not be a gpr?
+        # TODO: what exactly qualifies as GPR variant?
         # if with_variants:
         #     gprs += gprs_variants
         #     vregs += vregs_variants
@@ -314,7 +313,7 @@ class RegisterType(Enum):
     @staticmethod
     def default_reserved():
         """Return the list of registers that should be reserved by default"""
-        return set(["flags", "sp"] + RegisterType.list_registers(RegisterType.HINT))
+        return set(["flags", "rsp"] + RegisterType.list_registers(RegisterType.HINT))
 
     @staticmethod
     def default_aliases():
@@ -634,6 +633,7 @@ class X86Instruction(Instruction):
         # Those replacements may look pointless, but they replace
         # actual whitespaces before/after '.,[]()' in the instruction
         # pattern by regular expressions allowing flexible whitespacing.
+        # TODO: adapt this to x86 more concretely
         flexible_spacing = [
             (r"\s*,\s*", r"\\s*,\\s*"),
             (r"\s*<imm>\s*", r"\\s*<imm>\\s*"),
@@ -651,13 +651,30 @@ class X86Instruction(Instruction):
         for c, cp in flexible_spacing:
             src = re.sub(c, cp, src)
 
-        gpr64_pattern = "|".join(sorted(_GPR64, key=len, reverse=True))
+        gpr_pattern = "|".join(sorted(["rax", "rsp", "rsi"], key=len, reverse=True))
+        imm_pattern = r"-?(?:0[xX][0-9a-fA-F]+|[0-9]+)"
 
-        def pattern_transform_q(g):
-            return f"(?P<raw_{g.group(1)}{g.group(2)}>({gpr64_pattern}))"
+        # Transform <Mx> (memory operands) first as we inject register operand patterns to be subbed out below.
+        def pattern_transform_mem(g):
+            make_named_group = lambda grp: f"{g.group(1)}{g.group(2)}_{grp}"
+            base_group = make_named_group("base")
+            off_scale_group = make_named_group("off_scale")
+            off_idx_group = make_named_group("off_idx")
+            sign_group = make_named_group("sign")
+            dsp_group = make_named_group("dsp")
+            return (
+                rf"\[\s*<R{base_group}>"
+                rf"(?:\s*\+\s*(?P<raw_{off_scale_group}>[1248])\s*\*\s*<R{off_idx_group}>)?"
+                rf"(?:\s*(?P<raw_{sign_group}>[+-])\s*(?P<raw_{dsp_group}>{imm_pattern}))?"
+                rf"\s*\]"
+            )
 
-        # Quadwords (64-bit registers only)
-        src = re.sub(r"<([Q])(\w+)>", pattern_transform_q, src)
+        src = re.sub(r"<([M])(\w+)>", pattern_transform_mem, src)
+
+        def pattern_transform_reg(g):
+            return f"(?P<raw_{g.group(1)}{g.group(2)}>({gpr_pattern}))"
+
+        src = re.sub(r"<([R])(\w+)>", pattern_transform_reg, src)
 
         # Replace <key> or <key0>, <key1>, ... with pattern
         def replace_placeholders(src, mnemonic_key, regexp, group_name):
@@ -686,7 +703,6 @@ class X86Instruction(Instruction):
                 "OF",
             ]
         )
-        imm_pattern = r"(?:0[xX][0-9a-fA-F]+|-?[0-9]+)"
         index_pattern = "[0-9]+"
 
         src = replace_placeholders(src, "imm", imm_pattern, "imm")
@@ -733,7 +749,8 @@ class X86Instruction(Instruction):
     @cache
     def _infer_register_type(ptrn):
         # Then check by prefix
-        if ptrn[0].upper() in ["Q"]:
+        if ptrn[0].upper() in ["R", "M"]:
+            # R: plain GPR operand; M: memory operand whose base register is a GPR
             return RegisterType.GPR
         # if ptrn[0].upper() in ["T"]:
         #     return RegisterType.HINT
@@ -782,6 +799,13 @@ class X86Instruction(Instruction):
         assert len(in_outs) == len(arg_types_in_out)
         self.pattern_in_outs = list(zip(in_outs, arg_types_in_out))
 
+        self.base = None
+        self.offset = None
+        self.displacement = None
+        self.mem_args = (
+            {}
+        )  # maps M-operand name (e.g. "Ma") -> full address expression for write()
+
     @staticmethod
     def _to_reg(ty, s):
         if ty == RegisterType.GPR:
@@ -799,7 +823,8 @@ class X86Instruction(Instruction):
     @staticmethod
     def _build_pattern_replacement(s, ty, arg):
         if ty == RegisterType.GPR:
-            # x86_64 registers are fully named (rax, rsi, r8, etc.), return as-is
+            if s[0].upper() == "M":
+                return f"[{arg}]"
             return arg
         if ty == RegisterType.HINT:
             if arg[0] != "t":
@@ -827,6 +852,7 @@ class X86Instruction(Instruction):
     def build_core(obj, res):
 
         def group_to_attribute(group_name, attr_name, f=None):
+
             def f_default(x):
                 return x
 
@@ -853,25 +879,55 @@ class X86Instruction(Instruction):
         group_to_attribute("index", "index", int)
         group_to_attribute("flag", "flag")
 
-        for s, ty in obj.pattern_inputs:
+        def resolve_arg(s, ty, res):
+            """Resolve pattern name s to its architectural register.
+            For M-prefix patterns (memory operands), the base register is stored
+            under the key R{s}_base (e.g. RMa_base for <Ma>), not s itself."""
             if ty == RegisterType.FLAGS and s in ["FG0", "FG1"]:
-                # Implicit FLAGS registers (FG0, FG1) - not in pattern
-                obj.args_in.append(s)
-            else:
-                obj.args_in.append(X86Instruction._to_reg(ty, res[s]))
-        for s, ty in obj.pattern_outputs:
-            if ty == RegisterType.FLAGS and s in ["FG0", "FG1"]:
-                # Implicit FLAGS registers (FG0, FG1) - not in pattern
-                obj.args_out.append(s)
-            else:
-                obj.args_out.append(X86Instruction._to_reg(ty, res[s]))
+                return s
+            if s[0].upper() == "M":
+                return X86Instruction._to_reg(ty, res[f"R{s}_base"])
+            return X86Instruction._to_reg(ty, res[s])
 
+        for s, ty in obj.pattern_inputs:
+            obj.args_in.append(resolve_arg(s, ty, res))
+        for s, ty in obj.pattern_outputs:
+            obj.args_out.append(resolve_arg(s, ty, res))
         for s, ty in obj.pattern_in_outs:
-            if ty == RegisterType.FLAGS and s in ["FG0", "FG1"]:
-                # Implicit FLAGS registers (FG0, FG1) - not in pattern
-                obj.args_in_out.append(s)
-            else:
-                obj.args_in_out.append(X86Instruction._to_reg(ty, res[s]))
+            obj.args_in_out.append(resolve_arg(s, ty, res))
+
+        # For memory operands that carry a scaled index register (e.g. [rsp + 4*rax])
+        # rax is always read as part of adress computation and must be an input
+        # This is independent of which list the M-operand itself belongs to
+        all_patterns = obj.pattern_inputs + obj.pattern_outputs + obj.pattern_in_outs
+        for s, ty in all_patterns:
+            if s[0].upper() == "M":
+                if (off_idx := res.get(f"R{s}_off_idx")) is not None:
+                    if (
+                        reg := X86Instruction._to_reg(RegisterType.GPR, off_idx)
+                    ) not in obj.args_in and reg not in obj.args_in_out:
+                        obj.args_in.append(reg)
+                        obj.arg_types_in.append(RegisterType.GPR)
+                        obj.num_in += 1
+                        obj.args_in_restrictions.append(None)
+
+        # Build full memory expressions for write() output.
+        # args_in/out track only the base register for dependency purposes;
+        # mem_args carries the complete address expression (e.g. "rsp + 0x80").
+        all_patterns = obj.pattern_inputs + obj.pattern_outputs + obj.pattern_in_outs
+        for s, ty in all_patterns:
+            if s[0].upper() == "M":
+                base = res[f"R{s}_base"]
+                off_scale = res.get(f"{s}_off_scale")
+                off_idx = res.get(f"R{s}_off_idx")
+                sign = res.get(f"{s}_sign")
+                dsp = res.get(f"{s}_dsp")
+                expr = base
+                if off_scale and off_idx:
+                    expr += f" + {off_scale} * {off_idx}"
+                if sign and dsp:
+                    expr += f" {sign} {dsp}"
+                obj.mem_args[s] = expr
 
     @staticmethod
     def build(c, src):
@@ -911,7 +967,8 @@ class X86Instruction(Instruction):
         )
 
         for arg, (s, ty) in ll:
-            out = X86Instruction._instantiate_pattern(s, ty, arg, out)
+            write_arg = self.mem_args.get(s, arg) if s[0].upper() == "M" else arg
+            out = X86Instruction._instantiate_pattern(s, ty, write_arg, out)
 
         def replace_pattern(txt, attr_name, mnemonic_key, t=None):
             def t_default(x):
@@ -949,18 +1006,40 @@ class X86Instruction(Instruction):
 #     pattern = "nop"
 
 
-class add(X86Instruction):
-    pattern = "add <Qa>, <Qb>"
-    in_outs = ["Qa"]
-    inputs = ["Qb"]
+class X86ArithmeticInstruction(X86Instruction):
+    pass
+
+
+class X86AddInstruction(X86ArithmeticInstruction):
     modifiesFlags = True
 
 
-# class add_imm(X86Instruction):
-#     pattern = "add <Qa>, <imm>"
-#     inputs = ["Qa"]
-#     outputs = ["Qa"]
-#     modifiesFlags = True
+class add_rr(X86AddInstruction):
+    pattern = "add <Ra>, <Rb>"
+    in_outs = ["Ra"]
+    inputs = ["Rb"]
+
+
+class add_ri(X86AddInstruction):
+    pattern = "add <Ra>, <imm>"
+    in_outs = ["Ra"]
+
+
+class add_rm(X86AddInstruction):
+    pattern = "add <Ra>, <Ma>"
+    in_outs = ["Ra"]
+    inputs = ["Ma"]
+
+
+class add_mr(X86AddInstruction):
+    pattern = "add <Ma>, <Ra>"
+    inputs = ["Ma", "Ra"]  # No register is changed via this op.
+
+
+# TODO: add support for this, requires setting dtype/size.
+# class add_mi(X86AddInstruction):
+#     pattern = "add <Ma>, <imm>"
+#     inputs = ["Ma"]
 
 
 def iter_x86_64_instructions():

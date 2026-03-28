@@ -14,6 +14,12 @@ class Instructions(OptimizationRunner):
         slothy.config.constraints.allow_reordering = False
         slothy.config.variable_size = True
         slothy.config.constraints.stalls_first_attempt = 256
+        # TODO: remove this after we have support for mov, so that we can
+        # control register values and construct valid memory based on reg
+        # contents.
+        slothy.config.selftest = (
+            False  # memory instructions with random regs make emulation non-trivial
+        )
         slothy.optimize(start="start", end="end")
 
 
